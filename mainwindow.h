@@ -7,6 +7,7 @@
 class QDoubleSpinBox;
 class QLabel;
 class QProgressBar;
+class Scene3D;
 
 class MainWindow : public QMainWindow
 {
@@ -22,6 +23,7 @@ private:
     QLabel *state_label;
     QLabel *message_label;
     QProgressBar *battery_bar;
+    Scene3D *scene;
 
     void refresh_state();
 };

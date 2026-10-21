@@ -1,9 +1,11 @@
 #include "mainwindow.h"
+#include "scene3d.h"
 
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QProgressBar>
 #include <QPushButton>
@@ -14,9 +16,14 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setWindowTitle("Практика 1 — Управление БПЛА");
-    resize(500, 460);
+    resize(1150, 680);
     auto *central = new QWidget(this);
-    auto *layout = new QVBoxLayout(central);
+    auto *main_layout = new QHBoxLayout(central);
+    auto *controls = new QWidget(central);
+    controls->setMaximumWidth(410);
+    auto *layout = new QVBoxLayout(controls);
+    layout->setContentsMargins(0, 0, 0, 0);
+    main_layout->addWidget(controls);
     setCentralWidget(central);
 
     auto *state_group = new QGroupBox("Состояние БПЛА", central);
@@ -73,6 +80,43 @@ MainWindow::MainWindow(QWidget *parent)
     message_label->setWordWrap(true);
     message_label->setMinimumHeight(40);
     layout->addWidget(message_label);
+    layout->addStretch();
+
+    auto *view_layout = new QVBoxLayout;
+    auto *camera_buttons = new QHBoxLayout;
+    auto *zoom_in = new QPushButton("Приблизить", central);
+    auto *zoom_out = new QPushButton("Отдалить", central);
+    auto *focus = new QPushButton("К БПЛА", central);
+    auto *reset_camera = new QPushButton("Общий вид", central);
+    zoom_in->setObjectName("zoomInButton");
+    zoom_out->setObjectName("zoomOutButton");
+    focus->setObjectName("focusDroneButton");
+    reset_camera->setObjectName("resetCameraButton");
+    camera_buttons->addWidget(zoom_in);
+    camera_buttons->addWidget(zoom_out);
+    camera_buttons->addWidget(focus);
+    camera_buttons->addWidget(reset_camera);
+    view_layout->addLayout(camera_buttons);
+    scene = new Scene3D(central);
+    scene->setObjectName("scene3d");
+    view_layout->addWidget(scene, 1);
+    auto *legend = new QLabel("Зелёный куб — начало координат; красный — заданная точка.\n"
+                             "Жёлтая сфера — ориентир. Оси: X — красная, Y — зелёная, Z — синяя.\n"
+                             "ПКМ — вращение, ЛКМ — сдвиг, колесо — масштаб.", central);
+    legend->setWordWrap(true);
+    view_layout->addWidget(legend);
+    main_layout->addLayout(view_layout, 1);
+    connect(zoom_in, &QPushButton::clicked, this, [this] { scene->zoom(0.8f); });
+    connect(zoom_out, &QPushButton::clicked, this, [this] { scene->zoom(1.25f); });
+    connect(focus, &QPushButton::clicked, scene, &Scene3D::focusDrone);
+    connect(reset_camera, &QPushButton::clicked, scene, &Scene3D::resetCamera);
+    auto update_target = [this] {
+        scene->setTarget(x_input->value(), y_input->value(), altitude_input->value());
+    };
+    for (auto *input : {x_input, y_input, altitude_input}) {
+        connect(input, qOverload<double>(&QDoubleSpinBox::valueChanged), this, update_target);
+    }
+    update_target();
 
     connect(takeoff_button, &QPushButton::clicked, this, [this] {
         const bool was_flying = drone.is_flying();
@@ -131,4 +175,5 @@ void MainWindow::refresh_state()
         .arg(drone.get_battery(), 0, 'f', 2)
         .arg(drone.has_valid_telemetry() ? "Корректна" : "Некорректна"));
     battery_bar->setValue(static_cast<int>(std::round(drone.get_battery())));
+    scene->updateDrone(drone);
 }
