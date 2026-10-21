@@ -6,16 +6,13 @@
 #include <Qt3DExtras/Qt3DWindow>
 #include <Qt3DExtras/QCuboidMesh>
 #include <Qt3DExtras/QCylinderMesh>
-#include <Qt3DExtras/QSphereMesh>
 #include <Qt3DExtras/QPhongMaterial>
-#include <Qt3DExtras/QPhongAlphaMaterial>
 #include <Qt3DExtras/QForwardRenderer>
 #include <Qt3DExtras/QOrbitCameraController>
 #include <Qt3DRender/QCamera>
 #include <Qt3DRender/QDirectionalLight>
 #include <QVBoxLayout>
 #include <algorithm>
-#include <cmath>
 
 QVector3D Scene3D::toScene(const Point3D &p)
 {
@@ -44,7 +41,6 @@ Scene3D::Scene3D(QWidget *parent)
     addLine({0, 0, 2}, {0, 0, 600}, QColor(80, 160, 255), m_root, 2);
 
     m_droneVisual = new DroneVisual(m_view->camera(), m_root);
-    addZone({300, 200, 200}, 120, m_root);
     addBox({0, 0, 3}, {12, 12, 6}, QColor(70, 220, 120), m_root);
     auto *target = addBox({10, 20, 50}, {10, 10, 10}, QColor(235, 65, 65), m_root);
     m_targetTransform = target->componentsOfType<Qt3DCore::QTransform>().first();
@@ -114,40 +110,6 @@ void Scene3D::addLine(const Point3D &from, const Point3D &to, const QColor &colo
     entity->addComponent(mesh);
     entity->addComponent(transform);
     entity->addComponent(material);
-}
-
-void Scene3D::addZone(const Point3D &center, double radius, Qt3DCore::QEntity *parent)
-{
-    Qt3DCore::QEntity *sphere = new Qt3DCore::QEntity(parent);
-    Qt3DExtras::QSphereMesh *mesh = new Qt3DExtras::QSphereMesh(sphere);
-    mesh->setRadius(radius);
-    mesh->setRings(32);
-    mesh->setSlices(48);
-    Qt3DCore::QTransform *transform = new Qt3DCore::QTransform(sphere);
-    transform->setTranslation(toScene(center));
-    Qt3DExtras::QPhongAlphaMaterial *material = new Qt3DExtras::QPhongAlphaMaterial(sphere);
-    material->setDiffuse(QColor(245, 196, 60));
-    material->setAmbient(QColor(150, 115, 35));
-    material->setAlpha(0.18f);
-    sphere->addComponent(mesh);
-    sphere->addComponent(transform);
-    sphere->addComponent(material);
-
-    const double pi = 3.14159265358979323846;
-    for (int plane = 0; plane < 3; ++plane) {
-        Point3D previous;
-        for (int i = 0; i <= 64; ++i) {
-            const double angle = 2 * pi * i / 64;
-            const double a = radius * std::cos(angle);
-            const double b = radius * std::sin(angle);
-            const Point3D offset = plane == 0 ? Point3D{a, b, 0}
-                : (plane == 1 ? Point3D{a, 0, b} : Point3D{0, a, b});
-            const Point3D point = center + offset;
-            if (i > 0)
-                addLine(previous, point, QColor(245, 196, 60), parent, 0.8f);
-            previous = point;
-        }
-    }
 }
 
 void Scene3D::updateDrone(const Drone &drone)

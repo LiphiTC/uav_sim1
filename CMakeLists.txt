@@ -9,7 +9,7 @@ find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets 3DCore 3DRender 3
 find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets 3DCore 3DRender 3DExtras 3DInput Multimedia)
 
 set(GUI_SOURCES mainwindow.h mainwindow.cpp scene3d.h scene3d.cpp
-    dronevisual.h dronevisual.cpp point3d.h assets.qrc)
+    dronevisual.h dronevisual.cpp batterygraph.h batterygraph.cpp point3d.h assets.qrc)
 set(GUI_LIBRARIES Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::3DCore
     Qt${QT_VERSION_MAJOR}::3DRender Qt${QT_VERSION_MAJOR}::3DExtras
     Qt${QT_VERSION_MAJOR}::3DInput Qt${QT_VERSION_MAJOR}::Multimedia)

@@ -3,6 +3,7 @@
 
 #include "drone.h"
 #include <QMainWindow>
+#include <QElapsedTimer>
 #include <QSet>
 #include <initializer_list>
 
@@ -11,11 +12,13 @@ class QLabel;
 class QProgressBar;
 class Scene3D;
 class QMediaPlayer;
+class BatteryGraph;
 
 class MainWindow : public QMainWindow
 {
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    void advance_simulation(double seconds);
 
 private:
     Drone drone;
@@ -31,6 +34,9 @@ private:
     QMediaPlayer *low_battery_player;
     bool low_battery_warning_active = false;
     QSet<QDoubleSpinBox *> invalid_inputs;
+    QElapsedTimer frame_clock;
+    BatteryGraph *battery_graph;
+    double simulation_seconds = 0.0;
 
     bool eventFilter(QObject *object, QEvent *event) override;
     bool validate_inputs(std::initializer_list<QDoubleSpinBox *> inputs);

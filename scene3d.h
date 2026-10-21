@@ -28,7 +28,6 @@ private:
                             const QColor &color, Qt3DCore::QEntity *parent);
     void addLine(const Point3D &from, const Point3D &to, const QColor &color,
                  Qt3DCore::QEntity *parent, float width = 1.5f);
-    void addZone(const Point3D &center, double radius, Qt3DCore::QEntity *parent);
     void updateAspectRatio();
 
     Qt3DExtras::Qt3DWindow *m_view;

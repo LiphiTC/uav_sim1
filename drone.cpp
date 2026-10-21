@@ -31,6 +31,7 @@ void Drone::set_position(double new_x, double new_y, double new_z)
     x = new_x;
     y = new_y;
     z = new_z;
+    motion = Motion::Idle;
 }
 
 void Drone::takeoff()
@@ -44,26 +45,33 @@ void Drone::takeoff()
         return;
     }
     flying = true;
-    z = 1.0;
     battery -= 1.0;
-    std::cout << "Drone took off\n";
+    start_motion({x, y, takeoff_height}, Motion::TakingOff, 25.0);
+    std::cout << "Drone taking off to 50 m\n";
 }
 
 void Drone::land()
 {
-    if (!flying) {
+    if (!flying && z == 0.0) {
         std::cout << "Drone is already on the ground\n";
         return;
     }
-    flying = false;
-    z = 0.0;
-    std::cout << "Drone landed\n";
+    if (is_landing()) {
+        std::cout << "Drone is already landing\n";
+        return;
+    }
+    start_motion({x, y, 0.0}, Motion::Landing, 25.0);
+    std::cout << "Drone landing\n";
 }
 
 void Drone::move_to(double new_x, double new_y, double new_z)
 {
     if (!flying) {
         std::cout << "Move denied: drone is not flying\n";
+        return;
+    }
+    if (is_landing()) {
+        std::cout << "Move denied: drone is landing\n";
         return;
     }
     if (!valid_position(new_x, new_y, new_z)) {
@@ -74,9 +82,9 @@ void Drone::move_to(double new_x, double new_y, double new_z)
         std::cout << "Move denied: critically low battery\n";
         return;
     }
-    set_position(new_x, new_y, new_z);
     battery -= 1.0;
-    std::cout << "Drone moved to new position\n";
+    start_motion({new_x, new_y, new_z}, Motion::Moving, 80.0);
+    std::cout << "Drone moving to new position\n";
 }
 
 void Drone::set_battery(double value)
@@ -90,10 +98,46 @@ void Drone::set_battery(double value)
 
 void Drone::emergency_land()
 {
-    z = 0.0;
-    flying = false;
+    if (motion == Motion::EmergencyLanding)
+        return;
+    start_motion({x, y, 0.0}, Motion::EmergencyLanding, 25.0);
     std::cout << "WARNING: Emergency landing activated\n"
-              << "Drone landed immediately\n";
+              << "Drone descending vertically\n";
+}
+
+void Drone::start_motion(const Point3D& target, Motion next_motion, double speed)
+{
+    motion_start = {x, y, z};
+    motion_target = target;
+    motion_elapsed = 0.0;
+    motion_duration = std::max(0.2, distance(motion_start, target) / speed);
+    motion = next_motion;
+    if (distance(motion_start, target) < 1e-9) {
+        advance(motion_duration);
+    } else {
+        flying = true;
+    }
+}
+
+void Drone::advance(double seconds)
+{
+    if (!is_moving() || !std::isfinite(seconds) || seconds <= 0.0)
+        return;
+    motion_elapsed = std::min(motion_duration, motion_elapsed + seconds);
+    const double progress = motion_elapsed / motion_duration;
+    // Smoothstep плавно разгоняет и останавливает БПЛА на прямом отрезке.
+    const double smooth = progress * progress * (3.0 - 2.0 * progress);
+    const Point3D position = motion_start + (motion_target - motion_start) * smooth;
+    x = position.x;
+    y = position.y;
+    z = position.z;
+    if (motion_elapsed >= motion_duration) {
+        x = motion_target.x;
+        y = motion_target.y;
+        z = motion_target.z;
+        flying = z > 0.0;
+        motion = Motion::Idle;
+    }
 }
 
 void Drone::update_telemetry(double new_x, double new_y, double new_z,
@@ -138,6 +182,21 @@ double Drone::get_battery() const
 bool Drone::is_flying() const
 {
     return flying;
+}
+
+Drone::Motion Drone::get_motion() const
+{
+    return motion;
+}
+
+bool Drone::is_moving() const
+{
+    return motion != Motion::Idle;
+}
+
+bool Drone::is_landing() const
+{
+    return motion == Motion::Landing || motion == Motion::EmergencyLanding;
 }
 
 bool Drone::has_valid_telemetry() const

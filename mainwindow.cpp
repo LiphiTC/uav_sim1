@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "scene3d.h"
+#include "batterygraph.h"
 
 #include <QApplication>
 #include <QDoubleSpinBox>
@@ -14,6 +15,7 @@
 #include <QMediaPlayer>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <cmath>
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
@@ -89,7 +91,8 @@ MainWindow::MainWindow(QWidget *parent)
     message_label->setWordWrap(true);
     message_label->setMinimumHeight(40);
     layout->addWidget(message_label);
-    layout->addStretch();
+    battery_graph = new BatteryGraph(central);
+    layout->addWidget(battery_graph, 1);
 
     error_player = new QMediaPlayer(this);
     error_player->setObjectName("errorSoundPlayer");
@@ -150,7 +153,7 @@ MainWindow::MainWindow(QWidget *parent)
     scene->setObjectName("scene3d");
     view_layout->addWidget(scene, 1);
     auto *legend = new QLabel("Зелёный куб — начало координат; красный — заданная точка.\n"
-                             "Жёлтая сфера — ориентир. Оси: X — красная, Y — зелёная, Z — синяя.\n"
+                             "Оси: X — красная, Y — зелёная, Z — синяя.\n"
                              "ПКМ — вращение, ЛКМ — сдвиг, колесо — масштаб.", central);
     legend->setWordWrap(true);
     view_layout->addWidget(legend);
@@ -170,16 +173,20 @@ MainWindow::MainWindow(QWidget *parent)
     connect(takeoff_button, &QPushButton::clicked, this, [this] {
         const bool was_flying = drone.is_flying();
         drone.takeoff();
+        if (!was_flying && drone.is_flying()) {
+            altitude_input->setValue(Drone::takeoff_height);
+            invalid_inputs.remove(altitude_input);
+        }
         show_message(was_flying ? "БПЛА уже в полёте."
-            : drone.is_flying() ? "Взлёт выполнен."
+            : drone.is_flying() ? "Взлёт: набор высоты 50 м."
                                : "Взлёт запрещён: требуется заряд не менее 10%.",
                      was_flying || !drone.is_flying());
         refresh_state();
     });
     connect(land_button, &QPushButton::clicked, this, [this] {
-        const bool was_flying = drone.is_flying();
+        const bool was_flying = drone.is_flying() || drone.get_altitude() > 0.0;
         drone.land();
-        show_message(was_flying ? "Посадка выполнена." : "БПЛА уже на земле.", !was_flying);
+        show_message(was_flying ? "Посадка: снижение к земле." : "БПЛА уже на земле.", !was_flying);
         refresh_state();
     });
     connect(move_button, &QPushButton::clicked, this, [this] {
@@ -189,16 +196,19 @@ MainWindow::MainWindow(QWidget *parent)
         drone.move_to(x_input->value(), y_input->value(), altitude_input->value());
         if (!drone.is_flying()) {
             show_message("Перемещение запрещено: сначала выполните взлёт.", true);
+        } else if (drone.is_landing()) {
+            show_message("Перемещение запрещено: дождитесь завершения посадки.", true);
         } else if (drone.get_battery() == previous_battery) {
             show_message("Перемещение запрещено: требуется заряд не менее 5%.", true);
         } else {
-            show_message("БПЛА перемещён в заданную точку.");
+            show_message("БПЛА движется в заданную точку.");
         }
         refresh_state();
     });
     connect(emergency_button, &QPushButton::clicked, this, [this] {
         drone.emergency_land();
-        show_message("Аварийная посадка: высота сброшена, полёт прекращён.");
+        show_message(drone.is_moving() ? "Аварийная посадка: вертикальное снижение."
+                                       : "БПЛА на земле.");
         refresh_state();
     });
     connect(battery_button, &QPushButton::clicked, this, [this] {
@@ -216,6 +226,37 @@ MainWindow::MainWindow(QWidget *parent)
         show_message("Телеметрия обновлена.");
         refresh_state();
     });
+    auto *flight_timer = new QTimer(this);
+    flight_timer->setObjectName("flightTimer");
+    flight_timer->setTimerType(Qt::PreciseTimer);
+    connect(flight_timer, &QTimer::timeout, this, [this] {
+        advance_simulation(frame_clock.restart() / 1000.0);
+    });
+    frame_clock.start();
+    flight_timer->start(16);
+    refresh_state();
+}
+
+void MainWindow::advance_simulation(double seconds)
+{
+    if (!std::isfinite(seconds) || seconds <= 0.0)
+        return;
+    simulation_seconds += seconds;
+    battery_graph->add_sample(simulation_seconds, drone.get_battery());
+    if (!drone.is_moving())
+        return;
+    const Drone::Motion previous_motion = drone.get_motion();
+    drone.advance(seconds);
+    if (!drone.is_moving()) {
+        if (previous_motion == Drone::Motion::TakingOff)
+            show_message("Взлёт завершён: высота 50 м.");
+        else if (previous_motion == Drone::Motion::EmergencyLanding)
+            show_message("Аварийная посадка завершена. БПЛА на земле.");
+        else if (previous_motion == Drone::Motion::Landing)
+            show_message("Посадка завершена. БПЛА на земле.");
+        else
+            show_message("БПЛА достиг заданной точки.");
+    }
     refresh_state();
 }
 
@@ -265,10 +306,18 @@ void MainWindow::show_message(const QString& text, bool error)
 
 void MainWindow::refresh_state()
 {
+    QString status = drone.is_flying() ? "В полёте" : "На земле";
+    switch (drone.get_motion()) {
+    case Drone::Motion::TakingOff: status = "Взлёт"; break;
+    case Drone::Motion::Moving: status = "Перемещение"; break;
+    case Drone::Motion::Landing: status = "Посадка"; break;
+    case Drone::Motion::EmergencyLanding: status = "Аварийное снижение"; break;
+    case Drone::Motion::Idle: break;
+    }
     state_label->setText(QString("ID: %1   |   %2\nX: %3 м   Y: %4 м   Высота: %5 м\n"
                                  "Заряд: %6%   |   Телеметрия: %7")
         .arg(drone.get_id())
-        .arg(drone.is_flying() ? "В полёте" : "На земле")
+        .arg(status)
         .arg(drone.get_x(), 0, 'f', 2)
         .arg(drone.get_y(), 0, 'f', 2)
         .arg(drone.get_altitude(), 0, 'f', 2)
@@ -293,5 +342,6 @@ void MainWindow::refresh_state()
         low_battery_player->stop();
     }
     low_battery_warning_active = low_battery;
+    battery_graph->add_sample(simulation_seconds, battery);
     scene->updateDrone(drone);
 }

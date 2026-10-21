@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "batterygraph.h"
 #include <QApplication>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -11,8 +12,10 @@
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTest>
+#include <QTimer>
 #include <Qt3DCore/QTransform>
 #include <Qt3DExtras/Qt3DWindow>
+#include <Qt3DExtras/QSphereMesh>
 #include <Qt3DRender/QCamera>
 #include <Qt3DRender/QFrameGraphNode>
 #include <Qt3DRender/QNoDraw>
@@ -53,6 +56,9 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     check(!QImage(":/assets/drone.jpg").isNull(), "embedded drone image");
     MainWindow window;
+    auto *timer = window.findChild<QTimer *>("flightTimer");
+    check(timer, "animation timer exists");
+    timer->stop(); // В тестах продвигаем время явно, без ожидания полного полёта.
     Qt3DExtras::Qt3DWindow *view = nullptr;
     for (QWindow *candidate : QApplication::allWindows()) {
         if (auto *scene = qobject_cast<Qt3DExtras::Qt3DWindow *>(candidate)) {
@@ -68,6 +74,7 @@ int main(int argc, char *argv[])
     auto *drone = root->findChild<Qt3DCore::QTransform *>("droneTransform");
     auto *target = root->findChild<Qt3DCore::QTransform *>("targetTransform");
     check(drone && target, "drone and target transforms exist");
+    check(root->findChildren<Qt3DExtras::QSphereMesh *>().isEmpty(), "reference sphere removed");
     auto click = [&window](const char *name) {
         auto *button = window.findChild<QPushButton *>(name);
         check(button, name);
@@ -86,14 +93,33 @@ int main(int argc, char *argv[])
     click("moveButton");
     check(drone->translation() == QVector3D(-300, 15, 200), "refused movement preserves position");
     click("takeoffButton");
-    check(drone->translation() == QVector3D(-300, 16, 200), "takeoff updates altitude");
+    check(drone->translation() == QVector3D(-300, 15, 200), "takeoff starts at current position");
+    window.advance_simulation(1.0);
+    check(drone->translation() == QVector3D(-300, 40, 200), "takeoff animated midpoint");
+    window.advance_simulation(1.0);
+    check(drone->translation() == QVector3D(-300, 65, 200), "takeoff reaches 50 metres");
+    check(window.findChild<QDoubleSpinBox *>("altitudeInput")->value() == 50.0,
+          "takeoff sets the height field to 50");
+    input("altitudeInput", 80);
     click("moveButton");
+    check(drone->translation() == QVector3D(-300, 65, 200), "move does not teleport");
+    window.advance_simulation(0.5);
+    check(drone->translation().x() > -300 && drone->translation().x() < -200,
+          "movement has intermediate rendered positions");
+    window.advance_simulation(100.0);
     check(drone->translation() == QVector3D(-200, 95, 80), "movement maps X Y and altitude");
     click("landButton");
+    window.advance_simulation(100.0);
     check(drone->translation() == QVector3D(-200, 15, 80), "landing updates scene");
     click("takeoffButton");
+    window.advance_simulation(2.0);
     click("moveButton");
+    window.advance_simulation(100.0);
     click("emergencyButton");
+    window.advance_simulation(1.0);
+    check(drone->translation().y() > 15.0 && drone->translation().y() < 65.0,
+          "emergency landing descends smoothly");
+    window.advance_simulation(100.0);
     check(drone->translation() == QVector3D(-200, 15, 80), "emergency landing updates scene");
     input("xInput", -1000);
     input("altitudeInput", 200);
@@ -138,8 +164,11 @@ int main(int argc, char *argv[])
           "flight consumption updates battery color");
     check(QTest::qWaitFor([low_sound] { return is_playing(low_sound); }, 5000),
           "crossing below 20 starts lowbattery sound");
+    window.advance_simulation(100.0);
     click("moveButton");
+    window.advance_simulation(100.0);
     click("landButton");
+    window.advance_simulation(100.0);
     check(play_count(low_events) == 1, "low battery does not repeat on every update");
     input("batteryInput", 0);
     click("batteryButton");
@@ -188,6 +217,30 @@ int main(int argc, char *argv[])
     check(error_sound->error() == QMediaPlayer::NoError && low_sound->error() == QMediaPlayer::NoError,
           "both warning sounds decode without errors");
 
+    auto *graph = dynamic_cast<BatteryGraph *>(window.findChild<QWidget *>("batteryGraph"));
+    check(graph && !graph->history().isEmpty() && graph->history().last().y() == 80.0,
+          "battery graph follows charge changes");
+    const double last_time = graph->history().last().x();
+    window.advance_simulation(2.0);
+    check(graph->history().last().x() > last_time && graph->history().last().y() == 80.0,
+          "graph records time even while drone is stationary");
+    BatteryGraph bounded_graph;
+    for (int i = 0; i <= 500; ++i)
+        bounded_graph.add_sample(i, 100.0 - i % 100);
+    check(bounded_graph.history().size() <= 122, "graph retains only recent two minutes");
+    bounded_graph.add_sample(-1.0, 40.0);
+    bounded_graph.add_sample(501.0, 101.0);
+    check(bounded_graph.history().last().x() == 500.0, "graph rejects invalid samples");
+
+    click("emergencyButton");
+    window.advance_simulation(100.0);
+    click("takeoffButton");
+    timer->start(16);
+    check(QTest::qWaitFor([drone] { return drone->translation().y() > 15.0; }, 1000),
+          "real timer advances the drone");
+    timer->stop();
+    window.advance_simulation(100.0);
+
     // Необязательная проверка настоящего рендера на рабочем столе.
     const QString screenshot = qEnvironmentVariable("UAV_SCREENSHOT");
     if (!screenshot.isEmpty()) {
@@ -211,6 +264,7 @@ int main(int argc, char *argv[])
         auto *reply = capture->requestCapture();
         check(QTest::qWaitFor([reply] { return reply->isComplete(); }, 10000), "capture 3D framebuffer");
         check(reply->image().save(screenshot), "save rendered scene");
+        check(graph->grab().save(screenshot + ".battery.png"), "save battery graph");
         delete reply;
         delete capture;
         window.close();
