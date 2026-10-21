@@ -1,5 +1,7 @@
 <RCC>
  <qresource prefix="/assets">
   <file alias="drone.jpg">assets/drone.jpg</file>
+  <file alias="critical.mp3">assets/critical.mp3</file>
+  <file alias="lowbattery.mp3">assets/lowbattery.mp3</file>
  </qresource>
 </RCC>

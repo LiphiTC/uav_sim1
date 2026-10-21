@@ -5,14 +5,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets 3DCore 3DRender 3DExtras 3DInput)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets 3DCore 3DRender 3DExtras 3DInput)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core Widgets 3DCore 3DRender 3DExtras 3DInput Multimedia)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core Widgets 3DCore 3DRender 3DExtras 3DInput Multimedia)
 
 set(GUI_SOURCES mainwindow.h mainwindow.cpp scene3d.h scene3d.cpp
     dronevisual.h dronevisual.cpp point3d.h assets.qrc)
 set(GUI_LIBRARIES Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::3DCore
     Qt${QT_VERSION_MAJOR}::3DRender Qt${QT_VERSION_MAJOR}::3DExtras
-    Qt${QT_VERSION_MAJOR}::3DInput)
+    Qt${QT_VERSION_MAJOR}::3DInput Qt${QT_VERSION_MAJOR}::Multimedia)
 add_executable(Practical_01_Task_1 main.cpp drone.h drone.cpp ${GUI_SOURCES})
 target_link_libraries(Practical_01_Task_1 PRIVATE ${GUI_LIBRARIES})
 

@@ -1,8 +1,15 @@
 #include "mainwindow.h"
 #include <QApplication>
 #include <QDoubleSpinBox>
+#include <QFile>
+#include <QFocusEvent>
 #include <QImage>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMediaPlayer>
+#include <QProgressBar>
 #include <QPushButton>
+#include <QSignalSpy>
 #include <QTest>
 #include <Qt3DCore/QTransform>
 #include <Qt3DExtras/Qt3DWindow>
@@ -20,6 +27,25 @@ void check(bool condition, const char *message)
         std::cerr << "FAILED: " << message << '\n';
         std::exit(EXIT_FAILURE);
     }
+}
+
+bool is_playing(QMediaPlayer *player)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return player->playbackState() == QMediaPlayer::PlayingState;
+#else
+    return player->state() == QMediaPlayer::PlayingState;
+#endif
+}
+
+int play_count(const QSignalSpy& events)
+{
+    int count = 0;
+    for (const auto& event : events) {
+        if (event.at(0).toInt() == QMediaPlayer::PlayingState)
+            ++count;
+    }
+    return count;
 }
 
 int main(int argc, char *argv[])
@@ -82,6 +108,85 @@ int main(int argc, char *argv[])
     check(std::abs(view->camera()->viewVector().length() - distance) < 0.1f, "zoom out");
     click("resetCameraButton");
     check(view->camera()->position() == QVector3D(700, 700, 900), "restore overview");
+
+    auto *bar = window.findChild<QProgressBar *>("batteryBar");
+    auto *error_sound = window.findChild<QMediaPlayer *>("errorSoundPlayer");
+    auto *low_sound = window.findChild<QMediaPlayer *>("lowBatterySoundPlayer");
+    auto *battery_input = window.findChild<QDoubleSpinBox *>("batteryInput");
+    auto *editor = battery_input->findChild<QLineEdit *>();
+    auto *message = window.findChild<QLabel *>("messageLabel");
+    check(bar && error_sound && low_sound && editor && message, "battery and audio controls");
+    check(QFile::exists(":/assets/critical.mp3") && QFile::exists(":/assets/lowbattery.mp3"),
+          "embedded warning sounds");
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    QSignalSpy low_events(low_sound, &QMediaPlayer::playbackStateChanged);
+#else
+    QSignalSpy low_events(low_sound, &QMediaPlayer::stateChanged);
+#endif
+    input("batteryInput", 50);
+    click("batteryButton");
+    check(bar->styleSheet().contains("#2e7d32"), "50 percent is green");
+    input("batteryInput", 49.99);
+    click("batteryButton");
+    check(bar->styleSheet().contains("#f9a825"), "below 50 percent is amber");
+    input("batteryInput", 20);
+    click("batteryButton");
+    check(bar->styleSheet().contains("#f9a825") && play_count(low_events) == 0,
+          "20 percent is amber with no critical sound");
+    click("takeoffButton"); // 20 -> 19 после расхода заряда на взлёт.
+    check(bar->styleSheet().contains("#c62828") && bar->format().contains("19.00"),
+          "flight consumption updates battery color");
+    check(QTest::qWaitFor([low_sound] { return is_playing(low_sound); }, 5000),
+          "crossing below 20 starts lowbattery sound");
+    click("moveButton");
+    click("landButton");
+    check(play_count(low_events) == 1, "low battery does not repeat on every update");
+    input("batteryInput", 0);
+    click("batteryButton");
+    check(bar->value() == 0 && bar->styleSheet().contains("border: 2px solid #c62828"),
+          "empty battery retains red outline");
+    click("takeoffButton");
+    check(QTest::qWaitFor([error_sound] { return is_playing(error_sound); }, 5000),
+          "rejected takeoff plays error sound");
+    check(!is_playing(low_sound), "error warning takes priority over low battery warning");
+    input("batteryInput", 70);
+    click("batteryButton");
+    check(!is_playing(low_sound) && !is_playing(error_sound), "recovery stops warnings");
+    input("batteryInput", 19.99);
+    click("telemetryButton");
+    check(QTest::qWaitFor([low_sound] { return is_playing(low_sound); }, 5000)
+          && play_count(low_events) == 2, "new low battery episode replays warning");
+    input("batteryInput", 70);
+    click("batteryButton");
+
+    battery_input->selectAll();
+    QTest::keyClicks(editor, "x");
+    check(QTest::qWaitFor([error_sound] { return is_playing(error_sound); }, 5000),
+          "invalid character plays error sound");
+    click("batteryButton");
+    check(bar->format().contains("70.00"), "rejected input does not change drone battery");
+    battery_input->selectAll();
+    QTest::keyClicks(editor, "101");
+    click("batteryButton");
+    check(bar->format().contains("70.00") && message->text().contains("Ошибка"),
+          "out-of-range input is not applied as a partial number");
+    battery_input->selectAll();
+    QTest::keyClicks(editor, "60");
+    click("batteryButton");
+    check(bar->format().contains("60.00") && !is_playing(error_sound), "valid correction is accepted");
+    battery_input->selectAll();
+    QTest::keyClick(editor, Qt::Key_Backspace);
+    QFocusEvent focus_out(QEvent::FocusOut);
+    QApplication::sendEvent(battery_input, &focus_out);
+    click("batteryButton");
+    check(bar->format().contains("60.00") && message->text().contains("Ошибка"),
+          "incomplete input remains rejected after Qt restores previous text");
+    battery_input->selectAll();
+    QTest::keyClicks(editor, "80");
+    click("batteryButton");
+    check(bar->format().contains("80.00"), "correction clears incomplete-input error");
+    check(error_sound->error() == QMediaPlayer::NoError && low_sound->error() == QMediaPlayer::NoError,
+          "both warning sounds decode without errors");
 
     // Необязательная проверка настоящего рендера на рабочем столе.
     const QString screenshot = qEnvironmentVariable("UAV_SCREENSHOT");

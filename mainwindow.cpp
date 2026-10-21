@@ -1,16 +1,24 @@
 #include "mainwindow.h"
 #include "scene3d.h"
 
+#include <QApplication>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QKeyEvent>
+#include <QLineEdit>
+#include <QMediaPlayer>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <cmath>
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+#include <QAudioOutput>
+#endif
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -32,6 +40,7 @@ MainWindow::MainWindow(QWidget *parent)
     state_label->setObjectName("stateLabel");
     state_label->setWordWrap(true);
     battery_bar = new QProgressBar(state_group);
+    battery_bar->setObjectName("batteryBar");
     battery_bar->setRange(0, 100);
     state_layout->addWidget(state_label);
     state_layout->addWidget(battery_bar);
@@ -82,6 +91,46 @@ MainWindow::MainWindow(QWidget *parent)
     layout->addWidget(message_label);
     layout->addStretch();
 
+    error_player = new QMediaPlayer(this);
+    error_player->setObjectName("errorSoundPlayer");
+    low_battery_player = new QMediaPlayer(this);
+    low_battery_player->setObjectName("lowBatterySoundPlayer");
+    for (auto *player : {error_player, low_battery_player}) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        auto *audio_output = new QAudioOutput(player);
+        audio_output->setVolume(0.65f);
+        player->setAudioOutput(audio_output);
+        connect(player, &QMediaPlayer::errorOccurred, this, [] { QApplication::beep(); });
+#else
+        player->setVolume(65);
+        connect(player, QOverload<QMediaPlayer::Error>::of(&QMediaPlayer::error),
+                this, [] { QApplication::beep(); });
+#endif
+    }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    error_player->setSource(QUrl("qrc:/assets/critical.mp3"));
+    low_battery_player->setSource(QUrl("qrc:/assets/lowbattery.mp3"));
+#else
+    error_player->setMedia(QUrl("qrc:/assets/critical.mp3"));
+    low_battery_player->setMedia(QUrl("qrc:/assets/lowbattery.mp3"));
+#endif
+    for (auto *input : {x_input, y_input, altitude_input, battery_input}) {
+        auto *editor = input->findChild<QLineEdit *>();
+        input->installEventFilter(this);
+        editor->installEventFilter(this);
+        connect(editor, &QLineEdit::inputRejected, this, [this, input] {
+            invalid_inputs.insert(input);
+            show_message("Ошибка ввода: введите число в допустимом диапазоне.", true);
+        });
+        connect(editor, &QLineEdit::textEdited, this, [this, input] {
+            if (input->hasAcceptableInput())
+                invalid_inputs.remove(input);
+        });
+        connect(input, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, input] {
+            invalid_inputs.remove(input);
+        });
+    }
+
     auto *view_layout = new QVBoxLayout;
     auto *camera_buttons = new QHBoxLayout;
     auto *zoom_in = new QPushButton("Приблизить", central);
@@ -121,46 +170,97 @@ MainWindow::MainWindow(QWidget *parent)
     connect(takeoff_button, &QPushButton::clicked, this, [this] {
         const bool was_flying = drone.is_flying();
         drone.takeoff();
-        message_label->setText(was_flying ? "БПЛА уже в полёте."
+        show_message(was_flying ? "БПЛА уже в полёте."
             : drone.is_flying() ? "Взлёт выполнен."
-                               : "Взлёт запрещён: требуется заряд не менее 10%.");
+                               : "Взлёт запрещён: требуется заряд не менее 10%.",
+                     was_flying || !drone.is_flying());
         refresh_state();
     });
     connect(land_button, &QPushButton::clicked, this, [this] {
         const bool was_flying = drone.is_flying();
         drone.land();
-        message_label->setText(was_flying ? "Посадка выполнена." : "БПЛА уже на земле.");
+        show_message(was_flying ? "Посадка выполнена." : "БПЛА уже на земле.", !was_flying);
         refresh_state();
     });
     connect(move_button, &QPushButton::clicked, this, [this] {
+        if (!validate_inputs({x_input, y_input, altitude_input}))
+            return;
         const double previous_battery = drone.get_battery();
         drone.move_to(x_input->value(), y_input->value(), altitude_input->value());
         if (!drone.is_flying()) {
-            message_label->setText("Перемещение запрещено: сначала выполните взлёт.");
+            show_message("Перемещение запрещено: сначала выполните взлёт.", true);
         } else if (drone.get_battery() == previous_battery) {
-            message_label->setText("Перемещение запрещено: требуется заряд не менее 5%.");
+            show_message("Перемещение запрещено: требуется заряд не менее 5%.", true);
         } else {
-            message_label->setText("БПЛА перемещён в заданную точку.");
+            show_message("БПЛА перемещён в заданную точку.");
         }
         refresh_state();
     });
     connect(emergency_button, &QPushButton::clicked, this, [this] {
         drone.emergency_land();
-        message_label->setText("Аварийная посадка: высота сброшена, полёт прекращён.");
+        show_message("Аварийная посадка: высота сброшена, полёт прекращён.");
         refresh_state();
     });
     connect(battery_button, &QPushButton::clicked, this, [this] {
+        if (!validate_inputs({battery_input}))
+            return;
         drone.set_battery(battery_input->value());
-        message_label->setText("Заряд обновлён.");
+        show_message("Заряд обновлён.");
         refresh_state();
     });
     connect(telemetry_button, &QPushButton::clicked, this, [this] {
+        if (!validate_inputs({x_input, y_input, altitude_input, battery_input}))
+            return;
         drone.update_telemetry(x_input->value(), y_input->value(),
                                altitude_input->value(), battery_input->value());
-        message_label->setText("Телеметрия обновлена.");
+        show_message("Телеметрия обновлена.");
         refresh_state();
     });
     refresh_state();
+}
+
+bool MainWindow::eventFilter(QObject *object, QEvent *event)
+{
+    auto *input = qobject_cast<QDoubleSpinBox *>(object);
+    if (!input)
+        input = qobject_cast<QDoubleSpinBox *>(object->parent());
+    bool finishing = event->type() == QEvent::FocusOut;
+    if (event->type() == QEvent::KeyPress) {
+        const int key = static_cast<QKeyEvent *>(event)->key();
+        finishing = key == Qt::Key_Return || key == Qt::Key_Enter;
+    }
+    if (input && finishing && !input->hasAcceptableInput()) {
+        // Qt восстанавливает старое число при потере фокуса. Не применяем его
+        // вместо незавершённого ввода, пока пользователь не исправит поле.
+        invalid_inputs.insert(input);
+        show_message("Ошибка ввода: завершите число в поле.", true);
+    }
+    return QMainWindow::eventFilter(object, event);
+}
+
+bool MainWindow::validate_inputs(std::initializer_list<QDoubleSpinBox *> inputs)
+{
+    for (auto *input : inputs) {
+        if (!input->hasAcceptableInput() || invalid_inputs.contains(input)) {
+            show_message("Ошибка ввода: исправьте выделенное поле.", true);
+            input->setFocus();
+            input->selectAll();
+            return false;
+        }
+    }
+    return true;
+}
+
+void MainWindow::show_message(const QString& text, bool error)
+{
+    message_label->setText(text);
+    message_label->setStyleSheet(error ? "color: #c62828;" : "");
+    error_player->stop();
+    if (error) {
+        low_battery_player->stop();
+        error_player->setPosition(0);
+        error_player->play();
+    }
 }
 
 void MainWindow::refresh_state()
@@ -175,5 +275,23 @@ void MainWindow::refresh_state()
         .arg(drone.get_battery(), 0, 'f', 2)
         .arg(drone.has_valid_telemetry() ? "Корректна" : "Некорректна"));
     battery_bar->setValue(static_cast<int>(std::round(drone.get_battery())));
+    const double battery = drone.get_battery();
+    const QString color = battery >= 50.0 ? "#2e7d32" : battery >= 20.0 ? "#f9a825" : "#c62828";
+    const QString level = battery >= 50.0 ? "Норма" : battery >= 20.0 ? "Низкий" : "Критический";
+    battery_bar->setFormat(QString("%1% — %2").arg(battery, 0, 'f', 2).arg(level));
+    battery_bar->setStyleSheet(QString(
+        "QProgressBar { border: 2px solid %1; border-radius: 4px; background: #eeeeee;"
+        " text-align: center; color: #111111; min-height: 22px; }"
+        "QProgressBar::chunk { background-color: %1; }").arg(color));
+    // Одно предупреждение при входе в критический диапазон, без повтора
+    // при каждом обновлении координат или нажатии кнопки.
+    const bool low_battery = battery < 20.0;
+    if (low_battery && !low_battery_warning_active) {
+        low_battery_player->setPosition(0);
+        low_battery_player->play();
+    } else if (!low_battery) {
+        low_battery_player->stop();
+    }
+    low_battery_warning_active = low_battery;
     scene->updateDrone(drone);
 }
